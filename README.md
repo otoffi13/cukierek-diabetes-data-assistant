@@ -1,157 +1,351 @@
+# Agent Cukierek
+
+**Agent Cukierek** is a local data-processing and AI-assisted analysis project for exploring how glucose, insulin, carbohydrate intake, and menstrual cycle phase may relate to day-to-day changes in insulin sensitivity.
+
+The project combines exported data from:
+
+* **Glooko** — glucose, CGM, insulin, basal, bolus and carbohydrate data
+* **Samsung Health** — menstrual cycle logs and Samsung Health cycle predictions
+* **Ollama** — optional local language model used to generate natural-language daily summaries
+
+The system is designed to run locally on the user's computer. Medical and health-related source files are not intended to be uploaded to GitHub.
+
+---
+
+## Important medical disclaimer
+
+This project is for **personal data analysis and educational purposes only**.
+
+It does **not** provide medical advice, insulin dosing recommendations, therapy instructions, or treatment decisions.
+The calculated insulin sensitivity index is a **relative descriptive indicator**, not a clinical insulin sensitivity factor.
+
+Any diabetes treatment decisions should be made according to medical advice and the user's approved diabetes management plan.
+
+---
+
+## Main features
+
+* Imports Glooko ZIP exports directly without permanently unpacking them.
+* Imports Samsung Health ZIP exports directly.
+* Stores normalized historical data in a deduplicated event-level history.
+* Handles overlapping reports safely.
+* Preserves older data while adding newly available records.
+* Rebuilds daily glucose, insulin, carbohydrate, and cycle features from the full history.
+* Builds a relative daily insulin sensitivity index.
+* Uses Ollama locally to generate a readable daily explanation.
+* Can send a morning email notification.
+* Supports scheduled execution with Windows Task Scheduler.
+
+---
+
+## How the data pipeline works
+
+The intended workflow is:
+
+```text
+Glooko/Samsung Health ZIP export
+→ temporary extraction
+→ source-specific importer
+→ normalized historical storage
+→ event-level deduplication
+→ daily feature generation
+→ insulin sensitivity index
+→ optional Ollama explanation
+→ optional email notification
+```
+
+Processed ZIP files can be archived or deleted after successful import, depending on the configured retention mode.
+
+---
+
+## Project structure
+
+```text
+agent_cukierek/
+├── src/
+│   ├── process_zip_exports.py
+│   ├── import_glooko.py
+│   ├── import_samsung_cycle.py
+│   ├── history_store.py
+│   ├── build_sensitivity_index.py
+│   ├── daily_prediction_message.py
+│   └── agent_cli.py
+│
+├── data_raw/                  # local ZIP input folders, ignored by Git
+│   ├── glooko/
+│   └── samsung_health/
+│
+├── data_history/              # deduplicated normalized history, ignored by Git
+├── data_processed/            # generated daily tables, ignored by Git
+├── data_archive/              # archived processed ZIP files, ignored by Git
+├── reports/                   # generated reports/messages, ignored by Git
+├── run_morning_prediction.bat
+├── README.md
+└── .gitignore
+```
+
+Only the source code and documentation should be committed to GitHub.
+
+---
+
+## Data sources
+
+### Glooko
+
+The project expects Glooko export ZIP files containing CSV files such as:
+
+```text
+bg_data_1.csv
+cgm_data_1.csv
+cgm_carbs_data_1.csv
+Insulin data/basal_data_1.csv
+Insulin data/bolus_data_1.csv
+Insulin data/insulin_data_1.csv
+Manual data/food_data_1.csv
+Manual data/manual_insulin_data_1.csv
+```
+
+### Samsung Health
+
+The project expects Samsung Health export ZIP files containing cycle-related CSV files such as:
+
+```text
+com.samsung.health.cycle.flow...
+com.samsung.health.cycle.profile...
+com.samsung.shealth.cycle.prediction...
+```
+
+The system distinguishes between:
+
+* actually logged period data,
+* Samsung Health predictions,
+* cycle-day estimates inferred from actual data,
+* cycle-day estimates inferred from predicted data.
+
+---
+
+## Deduplication and overlapping reports
+
+The project is designed to support overlapping exports.
+
+For example:
+
+```text
+First report:  June 1–14
+Second report: June 8–21
+```
+
+The final historical dataset should contain:
+
+```text
+June 1–21
+```
+
+Records from June 8–14 are recognized as duplicates and are not counted twice.
+New records from June 15–21 are added to the history.
+
+Deduplication is performed at the event level, not at the date level. This means that if an export contains only half of a day and a later export contains the full day, the missing records from the second half of the day can still be added.
+
+---
+
 ## Requirements
 
-To run the project locally, you need:
+* Python 3.11+
+* pandas
+* requests
+* Ollama, optional but recommended for natural-language summaries
 
-- Python 3.10+
-- virtual environment, for example `venv`
-- installed Python dependencies from `requirements.txt`
-- configured environment variables in a local `.env` file
-- running Ollama instance for local LLM-based features
-- email account credentials for email notification/sending features
+Install Python dependencies:
+
+```bash
+pip install pandas requests
+```
+
+Install and run Ollama separately:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+The project can still run without Ollama, but daily explanations will use fallback text instead of a local language model response.
+
+---
 
 ## Environment variables
 
-The project uses environment variables stored in a local `.env` file.
+Secrets are not stored in the source code.
 
-Create a `.env` file in the root directory of the project:
+Email settings are read from Windows environment variables:
+
+```powershell
+setx AGENT_EMAIL_FROM "your-email@gmail.com"
+setx AGENT_EMAIL_TO "your-email@gmail.com"
+setx AGENT_EMAIL_APP_PASSWORD "your-gmail-app-password"
+```
+
+`AGENT_EMAIL_APP_PASSWORD` should be a Gmail app password, not the main Google account password.
+
+After setting environment variables with `setx`, close and reopen PowerShell.
+
+Optional ZIP retention mode:
+
+```powershell
+setx ZIP_RETENTION_MODE "archive"
+```
+
+Supported values:
 
 ```text
-cukierek-diabetes-data-assistant/
-│
-├── .env
-├── README.md
-├── requirements.txt
-└── ...
+archive   move processed ZIP files to data_archive/
+delete    delete ZIP files after successful import
+keep      leave ZIP files in place
 ```
 
-Example `.env` file:
-
-```env
-# Email configuration
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_USER=your_email@gmail.com
-EMAIL_PASSWORD=your_app_password
-EMAIL_FROM=your_email@gmail.com
-
-# Ollama configuration
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1
-
-# Application settings
-APP_ENV=development
-```
-
-Do not commit the `.env` file to GitHub.
-
-Only an example file such as `.env.example` should be stored in the repository.
-
-## Email configuration
-
-The project can use an email account to send notifications or reports.
-
-For Gmail, it is recommended to use an **App Password** instead of the main account password.
-
-Required variables:
-
-```env
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_USER=your_email@gmail.com
-EMAIL_PASSWORD=your_app_password
-EMAIL_FROM=your_email@gmail.com
-```
-
-The real password is stored only locally in the `.env` file and should never be committed to the repository.
-
-## Ollama configuration
-
-Some features of the project use a local language model through Ollama.
-
-Before running the project, make sure that Ollama is installed and running locally.
-
-Example model setup:
-
-```bash
-ollama pull llama3.1
-```
-
-The application expects Ollama to be available at:
+The recommended mode is:
 
 ```text
-http://localhost:11434
+archive
 ```
 
-You can configure this using:
+---
 
-```env
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1
+## Importing new data
+
+Place ZIP exports in local input folders, for example:
+
+```text
+data_raw/glooko/
+data_raw/samsung_health/
 ```
 
-If you use a different model, change the `OLLAMA_MODEL` value in your `.env` file.
-
-## Installation
-
-Clone the repository:
+Then run:
 
 ```bash
-git clone https://github.com/otoffi13/cukierek-diabetes-data-assistant.git
-cd cukierek-diabetes-data-assistant
+python src/process_zip_exports.py
 ```
 
-Create and activate a virtual environment:
+The processor will:
+
+1. detect ZIP files,
+2. classify them as Glooko or Samsung Health exports,
+3. temporarily extract them,
+4. run the correct importer,
+5. update the deduplicated history,
+6. rebuild daily feature tables,
+7. move successfully processed ZIPs to the archive.
+
+---
+
+## Building the insulin sensitivity index
+
+After importing data, run:
 
 ```bash
-python -m venv venv
+python src/build_sensitivity_index.py
 ```
 
-On Windows:
+This creates a relative daily sensitivity index based on available glucose, insulin, carbohydrate, and cycle features.
+
+The index is descriptive and relative. It is not a medical insulin sensitivity factor.
+
+---
+
+## Generating a daily prediction message
+
+To generate a daily message:
 
 ```bash
-venv\Scripts\activate
+python src/daily_prediction_message.py
 ```
 
-On Linux/macOS:
+The script can:
+
+* read recent glucose, insulin, carbohydrate, and cycle data,
+* estimate whether today may be closer to lower, typical, or higher relative sensitivity,
+* ask Ollama to generate a short explanation,
+* send the message by email if email environment variables are configured.
+
+---
+
+## Morning automation
+
+A Windows batch file can run the full morning workflow:
+
+```bat
+@echo off
+cd /d C:\Users\grosz\Documents\agent_cukierek
+
+python .\src\process_zip_exports.py
+python .\src\build_sensitivity_index.py
+python .\src\daily_prediction_message.py
+```
+
+This file can be scheduled with Windows Task Scheduler, for example at 08:30 every morning.
+
+Example command:
+
+```powershell
+schtasks /Create /SC DAILY /TN "Agent Cukierek - morning prediction" /TR "C:\Users\grosz\Documents\agent_cukierek\run_morning_prediction.bat" /ST 08:30
+```
+
+---
+
+## Privacy and repository safety
+
+Do not commit medical data, ZIP exports, generated CSV files, reports, logs, or secrets.
+
+Recommended `.gitignore`:
+
+```gitignore
+# Medical data and exports
+data_raw/
+data_history/
+data_processed/
+data_archive/
+reports/
+logs/
+
+# Exported/generated files
+*.zip
+*.csv
+*.xlsx
+
+# Secrets and local configuration
+.env
+*.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# System files
+.DS_Store
+Thumbs.db
+```
+
+Before committing, check staged files:
 
 ```bash
-source venv/bin/activate
+git status
+git diff --cached --name-only
 ```
 
-Install dependencies:
+Only source code, documentation, and safe configuration examples should be committed.
 
-```bash
-pip install -r requirements.txt
-```
+---
 
-Create the local `.env` file based on `.env.example`:
+## Current limitations
 
-```bash
-copy .env.example .env
-```
+* Fresh Glooko and Samsung Health exports still need to be provided by the user.
+* The system does not automatically download data from Glooko or Samsung Health accounts.
+* Daily predictions depend on how recent the imported data is.
+* Cycle predictions from Samsung Health are treated as predictions, not confirmed biological events.
+* The model is exploratory and should not be used for treatment decisions.
 
-Then fill in your local email and Ollama configuration.
+---
 
-## Running the project
+## License
 
-After installing dependencies and configuring the `.env` file, run the main application file:
-
-```bash
-python main.py
-```
-
-If the project uses a different entry point, run the appropriate script from the project directory.
-
-## Security note
-
-This repository must not contain:
-
-- real medical data,
-- exported ZIP files from diabetes platforms,
-- private CGM, insulin or carbohydrate records,
-- `.env` files,
-- email passwords,
-- API keys,
-- local database files with private data.
-
-Sensitive files should be excluded using `.gitignore`.
+This project is intended for personal and educational use. Add a license file before publishing it as an open-source project.
